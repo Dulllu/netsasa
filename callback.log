@@ -1,0 +1,60 @@
+{
+    "Body": {
+        "stkCallback": {
+            "MerchantRequestID": "e017-41bc-9acf-27652a51563045845",
+            "CheckoutRequestID": "ws_CO_19102025002607762718912019",
+            "ResultCode": 1032,
+            "ResultDesc": "Request Cancelled by user."
+        }
+    }
+}
+{
+    "Body": {
+        "stkCallback": {
+            "MerchantRequestID": "99e8-41d0-8462-e6124f12a79015251",
+            "CheckoutRequestID": "ws_CO_19102025002951098793271188",
+            "ResultCode": 1032,
+            "ResultDesc": "Request Cancelled by user."
+        }
+    }
+}
+{
+    "Body": {
+        "stkCallback": {
+            "MerchantRequestID": "6f23-4b16-bfec-a4fbda25dc0544132",
+            "CheckoutRequestID": "ws_CO_19102025004832997718912019",
+            "ResultCode": 1032,
+            "ResultDesc": "Request Cancelled by user."
+        }
+    }
+}
+{
+    "Body": {
+        "stkCallback": {
+            "MerchantRequestID": "281a-4735-96ee-9d025365cd8817534",
+            "CheckoutRequestID": "ws_CO_19102025224516519718912019",
+            "ResultCode": 1037,
+            "ResultDesc": "No response from user."
+        }
+    }
+}
+{
+    "Body": {
+        "stkCallback": {
+            "MerchantRequestID": "0f10-4396-980f-59832182e48515007",
+            "CheckoutRequestID": "ws_CO_19102025230141272718912019",
+            "ResultCode": 1032,
+            "ResultDesc": "Request Cancelled by user."
+        }
+    }
+}
+{
+    "Body": {
+        "stkCallback": {
+            "MerchantRequestID": "0f10-4396-980f-59832182e48515020",
+            "CheckoutRequestID": "ws_CO_19102025230317909106131616",
+            "ResultCode": 1025,
+            "ResultDesc": "Error Occurred while sending push request."
+        }
+    }
+}
