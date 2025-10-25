@@ -9,6 +9,13 @@ from config import *
 app = Flask(__name__)
 CORS(app)  # enable CORS for all routes
 
+# ----------------------------------------
+# Health check route (for Render)
+# ----------------------------------------
+@app.route("/")
+def home():
+    return jsonify({"message": "Netsasa backend is running successfully!"})
+
 # In-memory storage for STK statuses (for demo)
 STK_STATUS = {}
 
@@ -120,3 +127,4 @@ def check_status(checkout_id):
 if __name__ == "__main__":
     print("🚀 NETSASA Backend running on port 5000 ...")
     app.run(host="0.0.0.0", port=5000, debug=True)
+
