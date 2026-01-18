@@ -1,58 +1,68 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-import json
 import os
-from datetime import datetime
+import json
 
 app = Flask(__name__)
-CORS(app)  # Allow cross-origin requests
+CORS(app)
 
-# -----------------------------
-# Load Lipana Live Config
-# -----------------------------
-LIPANA_SECRET = os.getenv("LIPANA_SECRET")
-LIPANA_URL = os.getenv("LIPANA_URL")  # For live, usually https://api.lipana.dev/v1/transactions/push
+# -----------------------
+# Config from environment
+# -----------------------
 CALLBACK_URL = os.getenv("CALLBACK_URL")
+LIPANA_SECRET = os.getenv("LIPANA_SECRET")
+LIPANA_URL = os.getenv("LIPANA_URL")
 
-if not LIPANA_SECRET or not LIPANA_URL or not CALLBACK_URL:
-    raise ValueError("Please set LIPANA_SECRET, LIPANA_URL, and CALLBACK_URL in environment variables.")
+if not all([CALLBACK_URL, LIPANA_SECRET, LIPANA_URL]):
+    print("❌ ERROR: Missing one or more environment variables!")
 
-# In-memory storage for payment statuses
-PAYMENT_STATUS = {}
+# -----------------------
+# In-memory storage for demo
+# -----------------------
+STK_STATUS = {}
 
-# -----------------------------
-# Health Check
-# -----------------------------
+# -----------------------
+# Health check
+# -----------------------
 @app.route("/")
 def home():
     return jsonify({"message": "Netsasa backend is running!"})
 
-# -----------------------------
+# -----------------------
+# Normalize phone to 2547XXXXXXXX format
+# -----------------------
+def normalize_phone(phone: str):
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("0"):
+        phone = "254" + phone[1:]
+    elif phone.startswith("7"):
+        phone = "254" + phone
+    elif phone.startswith("+254"):
+        phone = "254" + phone[4:]
+    return phone
+
+# -----------------------
 # STK Push Endpoint
-# -----------------------------
+# -----------------------
 @app.route("/api/pay", methods=["POST"])
 def pay():
     try:
         data = request.get_json()
         phone = data.get("phone")
         amount = data.get("amount")
-        package = data.get("packageName")
+        package_name = data.get("packageName", "NETSASA Package")
 
         if not phone or not amount:
             return jsonify({"success": False, "message": "Missing phone or amount"}), 400
 
-        # Convert 07xxx format to 2547xxx
-        if phone.startswith("0"):
-            phone = "254" + phone[1:]
-        elif phone.startswith("o"):  # in case user types o1
-            phone = "254" + phone[1:]
+        phone = normalize_phone(phone)
 
         payload = {
+            "phone_number": phone,
             "amount": amount,
-            "phone": phone,
             "callback_url": CALLBACK_URL,
-            "description": f"Buy {package}"
+            "reference": package_name
         }
 
         headers = {
@@ -60,52 +70,68 @@ def pay():
             "Content-Type": "application/json"
         }
 
-        response = requests.post(LIPANA_URL, json=payload, headers=headers)
-        res_data = response.json()
+        print("💡 Sending STK Push to Lipana...")
+        print("Payload:", json.dumps(payload))
+        print("Headers:", headers)
 
-        # Log response for debugging
-        with open("transactions.log", "a") as f:
-            f.write(f"{datetime.now()} | {json.dumps(res_data)}\n")
+        response = requests.post(LIPANA_URL, json=payload, headers=headers, timeout=15)
+        print("Status code:", response.status_code)
+        print("Response:", response.text)
 
-        if response.status_code == 200 and "transaction_id" in res_data:
-            tx_id = res_data["transaction_id"]
-            PAYMENT_STATUS[tx_id] = "pending"
-            return jsonify({"success": True, "message": "STK Push sent successfully", "transaction_id": tx_id})
+        if response.status_code == 200:
+            res_json = response.json()
+            checkout_id = res_json.get("checkout_request_id") or res_json.get("CheckoutRequestID")
+            if checkout_id:
+                STK_STATUS[checkout_id] = "pending"
+                return jsonify({
+                    "success": True,
+                    "message": "STK Push sent successfully",
+                    "CheckoutRequestID": checkout_id
+                })
+            else:
+                return jsonify({"success": False, "message": "No CheckoutRequestID in response", "data": res_json}), 500
         else:
-            return jsonify({"success": False, "message": "Payment request failed", "data": res_data}), 500
+            return jsonify({"success": False, "message": "Payment request failed", "data": response.text}), response.status_code
 
     except Exception as e:
+        print("❌ Exception in /api/pay:", str(e))
         return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
 
-# -----------------------------
+# -----------------------
 # Callback Endpoint
-# -----------------------------
+# -----------------------
 @app.route("/api/callback", methods=["POST"])
 def callback():
-    data = request.get_json()
-    # Log callback
-    with open("callback.log", "a") as f:
-        f.write(f"{datetime.now()} | {json.dumps(data)}\n")
+    try:
+        data = request.get_json()
+        print("✅ Callback received:", json.dumps(data, indent=4))
 
-    tx_id = data.get("transaction_id")
-    status = data.get("status")  # success / failed
-    if tx_id:
-        PAYMENT_STATUS[tx_id] = status
+        checkout_id = data.get("checkout_request_id") or data.get("CheckoutRequestID")
+        result_code = data.get("result_code") or data.get("ResultCode")
 
-    print(f"✅ Callback received: {tx_id} -> {status}")
-    return jsonify({"success": True, "message": "Callback received"})
+        if checkout_id:
+            if result_code == 0:
+                STK_STATUS[checkout_id] = "success"
+            else:
+                STK_STATUS[checkout_id] = "failed"
 
-# -----------------------------
-# Check Payment Status
-# -----------------------------
-@app.route("/api/status/<tx_id>", methods=["GET"])
-def status(tx_id):
-    status = PAYMENT_STATUS.get(tx_id, "pending")
+        return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+    except Exception as e:
+        print("❌ Exception in /api/callback:", str(e))
+        return jsonify({"ResultCode": 1, "ResultDesc": f"Error: {str(e)}"}), 500
+
+# -----------------------
+# Check STK Status
+# -----------------------
+@app.route("/api/check/<checkout_id>", methods=["GET"])
+def check_status(checkout_id):
+    status = STK_STATUS.get(checkout_id, "pending")
     return jsonify({"success": True, "status": status})
 
-# -----------------------------
+# -----------------------
 # Run Server
-# -----------------------------
+# -----------------------
 if __name__ == "__main__":
-    print("🚀 Netsasa Backend running on port 5000")
+    print("🚀 NETSASA Backend running on port 5000 ...")
     app.run(host="0.0.0.0", port=5000, debug=True)
