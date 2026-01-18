@@ -1,130 +1,116 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests
-import base64
-from datetime import datetime
-import json
+import requests, os, time
 from config import *
 
 app = Flask(__name__)
-CORS(app)  # enable CORS for all routes
+CORS(app)
 
-# ----------------------------------------
-# Health check route (for Render)
-# ----------------------------------------
+# ------------------------------
+# Health check (Render)
+# ------------------------------
 @app.route("/")
 def home():
-    return jsonify({"message": "Netsasa backend is running successfully!"})
+    return jsonify({"status": "NETSASA backend running (Lipana LIVE)"})
 
-# In-memory storage for STK statuses (for demo)
-STK_STATUS = {}
+# ------------------------------
+# TEMP SESSION STORE
+# (Use Redis / DB later)
+# ------------------------------
+PAID_SESSIONS = {}
 
-# -----------------------
-# Generate Access Token
-# -----------------------
-def get_access_token():
-    auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-    response = requests.get(auth_url, auth=(CONSUMER_KEY, CONSUMER_SECRET))
-    data = response.json()
-    return data.get("access_token")
+# ------------------------------
+# PAY (Lipana STK Push)
+# ------------------------------
+@app.route("/pay", methods=["POST"])
+def pay():
+    data = request.json or {}
+    phone = data.get("phone")
+    package_id = data.get("package")
 
-# -----------------------
-# STK Push Endpoint
-# -----------------------
-@app.route("/api/pay", methods=["POST"])
-def stk_push():
+    if not phone or not package_id:
+        return jsonify({"message": "Missing phone or package"}), 400
+
+    if package_id not in PACKAGES:
+        return jsonify({"message": "Invalid package"}), 400
+
+    pkg = PACKAGES[package_id]
+
+    payload = {
+        "phone": phone,
+        "amount": int(pkg["price"]),
+        "reference": f"NETSASA-{int(time.time())}",
+        "description": pkg["name"],
+        "callback_url": LIPANA_CALLBACK_URL
+    }
+
     try:
-        data = request.get_json()
-        phone = data.get("phone")
+        r = requests.post(
+            "https://api.lipana.dev/v1/transactions/push-stk",
+            headers={
+                "x-api-key": LIPANA_API_KEY,
+                "Content-Type": "application/json"
+            },
+            json=payload,
+            timeout=15
+        )
+        r.raise_for_status()
+
+        return jsonify({
+            "message": "STK sent. Approve payment on your phone."
+        })
+
+    except requests.exceptions.RequestException as e:
+        print("Lipana error:", r.text if 'r' in locals() else e)
+        return jsonify({"message": "Payment initiation failed"}), 400
+
+# ------------------------------
+# LIPANA WEBHOOK
+# ------------------------------
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    payload = request.json or {}
+    print("Lipana webhook:", payload)
+
+    if payload.get("event") == "payment.success":
+        data = payload.get("data", {})
         amount = data.get("amount")
-        package = data.get("packageName")
 
-        if not phone or not amount:
-            return jsonify({"success": False, "message": "Missing phone or amount"}), 400
+        client_ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0]
+            or request.remote_addr
+        )
 
-        if phone.startswith("0"):
-            phone = "254" + phone[1:]
+        for pkg in PACKAGES.values():
+            if int(pkg["price"]) == int(amount):
+                expiry = time.time() + (pkg.get("minutes", 60) * 60)
+                PAID_SESSIONS[client_ip] = expiry
+                break
 
-        access_token = get_access_token()
-        if not access_token:
-            return jsonify({"success": False, "message": "Failed to get access token"}), 500
+    return jsonify({"ok": True})
 
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        password = base64.b64encode((SHORTCODE + PASSKEY + timestamp).encode()).decode()
+# ------------------------------
+# STATUS (polled by frontend)
+# ------------------------------
+@app.route("/status")
+def status():
+    client_ip = (
+        request.headers.get("X-Forwarded-For", "").split(",")[0]
+        or request.remote_addr
+    )
 
-        stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    expiry = PAID_SESSIONS.get(client_ip)
+    if expiry and expiry > time.time():
+        remaining = int((expiry - time.time()) / 60)
+        return jsonify({
+            "access": "granted",
+            "remaining_minutes": remaining
+        })
 
-        payload = {
-            "BusinessShortCode": SHORTCODE,
-            "Password": password,
-            "Timestamp": timestamp,
-            "TransactionType": "CustomerPayBillOnline",
-            "Amount": amount,
-            "PartyA": phone,
-            "PartyB": SHORTCODE,
-            "PhoneNumber": phone,
-            "CallBackURL": CALLBACK_URL,
-            "AccountReference": "NETSASA_WIFI",
-            "TransactionDesc": f"Buy {package}"
-        }
+    return jsonify({"access": "denied"}), 403
 
-        response = requests.post(stk_url, json=payload, headers=headers)
-        res_data = response.json()
-
-        # Log response
-        with open("transactions.log", "a") as f:
-            f.write(json.dumps(res_data, indent=4) + "\n")
-
-        if response.status_code == 200 and "CheckoutRequestID" in res_data:
-            checkout_id = res_data["CheckoutRequestID"]
-            # Save initial status
-            STK_STATUS[checkout_id] = "pending"
-            return jsonify({
-                "success": True,
-                "message": "STK Push sent successfully",
-                "CheckoutRequestID": checkout_id
-            })
-        else:
-            return jsonify({"success": False, "message": "STK request failed", "data": res_data}), 500
-
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
-
-# -----------------------
-# Callback URL
-# -----------------------
-@app.route("/api/callback", methods=["POST"])
-def callback():
-    data = request.get_json()
-    with open("callback.log", "a") as f:
-        f.write(json.dumps(data, indent=4) + "\n")
-
-    print("✅ Callback received from Safaricom:", data)
-
-    # Update STK_STATUS based on callback
-    result_code = data.get("Body", {}).get("stkCallback", {}).get("ResultCode", 1)
-    checkout_id = data.get("Body", {}).get("stkCallback", {}).get("CheckoutRequestID")
-    if checkout_id:
-        if result_code == 0:
-            STK_STATUS[checkout_id] = "success"
-        else:
-            STK_STATUS[checkout_id] = "failed"
-
-    return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"})
-
-# -----------------------
-# Check STK Status Endpoint
-# -----------------------
-@app.route("/api/check/<checkout_id>", methods=["GET"])
-def check_status(checkout_id):
-    status = STK_STATUS.get(checkout_id, "pending")
-    return jsonify({"success": True, "status": status})
-
-# -----------------------
-# Run Server
-# -----------------------
+# ------------------------------
+# RUN
+# ------------------------------
 if __name__ == "__main__":
-    print("🚀 NETSASA Backend running on port 5000 ...")
-    app.run(host="0.0.0.0", port=5000, debug=True)
-
+    app.run(host="0.0.0.0", port=5000)
