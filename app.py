@@ -1,116 +1,103 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests, os, time
+import requests
+import json
+from datetime import datetime
 from config import *
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # enable CORS for all routes
 
-# ------------------------------
-# Health check (Render)
-# ------------------------------
+# ----------------------------------------
+# Health check route
+# ----------------------------------------
 @app.route("/")
 def home():
-    return jsonify({"status": "NETSASA backend running (Lipana LIVE)"})
+    return jsonify({"message": "Netsasa backend is running successfully!"})
 
-# ------------------------------
-# TEMP SESSION STORE
-# (Use Redis / DB later)
-# ------------------------------
-PAID_SESSIONS = {}
+# In-memory storage for transactions
+TX_STATUS = {}
 
-# ------------------------------
-# PAY (Lipana STK Push)
-# ------------------------------
-@app.route("/pay", methods=["POST"])
+# -----------------------
+# STK Push / Payment Endpoint (Lipana LIVE)
+# -----------------------
+@app.route("/api/pay", methods=["POST"])
 def pay():
-    data = request.json or {}
-    phone = data.get("phone")
-    package_id = data.get("package")
-
-    if not phone or not package_id:
-        return jsonify({"message": "Missing phone or package"}), 400
-
-    if package_id not in PACKAGES:
-        return jsonify({"message": "Invalid package"}), 400
-
-    pkg = PACKAGES[package_id]
-
-    payload = {
-        "phone": phone,
-        "amount": int(pkg["price"]),
-        "reference": f"NETSASA-{int(time.time())}",
-        "description": pkg["name"],
-        "callback_url": LIPANA_CALLBACK_URL
-    }
-
     try:
-        r = requests.post(
-            "https://api.lipana.dev/v1/transactions/push-stk",
-            headers={
-                "x-api-key": LIPANA_API_KEY,
-                "Content-Type": "application/json"
-            },
-            json=payload,
-            timeout=15
-        )
-        r.raise_for_status()
-
-        return jsonify({
-            "message": "STK sent. Approve payment on your phone."
-        })
-
-    except requests.exceptions.RequestException as e:
-        print("Lipana error:", r.text if 'r' in locals() else e)
-        return jsonify({"message": "Payment initiation failed"}), 400
-
-# ------------------------------
-# LIPANA WEBHOOK
-# ------------------------------
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    payload = request.json or {}
-    print("Lipana webhook:", payload)
-
-    if payload.get("event") == "payment.success":
-        data = payload.get("data", {})
+        data = request.get_json()
+        phone = data.get("phone")
         amount = data.get("amount")
+        package = data.get("packageName")
 
-        client_ip = (
-            request.headers.get("X-Forwarded-For", "").split(",")[0]
-            or request.remote_addr
-        )
+        if not phone or not amount:
+            return jsonify({"success": False, "message": "Missing phone or amount"}), 400
 
-        for pkg in PACKAGES.values():
-            if int(pkg["price"]) == int(amount):
-                expiry = time.time() + (pkg.get("minutes", 60) * 60)
-                PAID_SESSIONS[client_ip] = expiry
-                break
+        # Convert 07 or 01 to 254 prefix
+        if phone.startswith("0"):
+            phone = "254" + phone[1:]
 
-    return jsonify({"ok": True})
+        payload = {
+            "phone": phone,
+            "amount": amount,
+            "package": package
+        }
 
-# ------------------------------
-# STATUS (polled by frontend)
-# ------------------------------
-@app.route("/status")
-def status():
-    client_ip = (
-        request.headers.get("X-Forwarded-For", "").split(",")[0]
-        or request.remote_addr
-    )
+        headers = {
+            "Authorization": f"Bearer {LIPANA_SECRET}",
+            "Content-Type": "application/json"
+        }
 
-    expiry = PAID_SESSIONS.get(client_ip)
-    if expiry and expiry > time.time():
-        remaining = int((expiry - time.time()) / 60)
-        return jsonify({
-            "access": "granted",
-            "remaining_minutes": remaining
-        })
+        response = requests.post(LIPANA_URL, json=payload, headers=headers)
+        res_data = response.json()
 
-    return jsonify({"access": "denied"}), 403
+        # Log transactions
+        with open("transactions.log", "a") as f:
+            f.write(json.dumps(res_data, indent=4) + "\n")
 
-# ------------------------------
-# RUN
-# ------------------------------
+        if response.status_code == 200 and res_data.get("transactionId"):
+            tx_id = res_data["transactionId"]
+            TX_STATUS[tx_id] = "pending"
+            return jsonify({
+                "success": True,
+                "message": "Payment request sent successfully",
+                "transactionId": tx_id
+            })
+        else:
+            return jsonify({"success": False, "message": "Payment request failed", "data": res_data}), 500
+
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
+
+# -----------------------
+# Callback from Lipana
+# -----------------------
+@app.route("/api/callback", methods=["POST"])
+def callback():
+    data = request.get_json()
+    with open("callback.log", "a") as f:
+        f.write(json.dumps(data, indent=4) + "\n")
+
+    print("✅ Callback received from Lipana:", data)
+
+    tx_id = data.get("transactionId")
+    status = data.get("status")  # Lipana might return "success" or "failed"
+
+    if tx_id:
+        TX_STATUS[tx_id] = status or "failed"
+
+    return jsonify({"result": "accepted"}), 200
+
+# -----------------------
+# Check Payment Status
+# -----------------------
+@app.route("/api/check/<tx_id>", methods=["GET"])
+def check_status(tx_id):
+    status = TX_STATUS.get(tx_id, "pending")
+    return jsonify({"success": True, "status": status})
+
+# -----------------------
+# Run Server
+# -----------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    print("🚀 NETSASA Backend running on port 5000 ...")
+    app.run(host="0.0.0.0", port=5000, debug=True)
