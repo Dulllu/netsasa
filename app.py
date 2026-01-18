@@ -1,35 +1,36 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests, os, json, traceback
+import requests
+import json
+import os
+from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)  # allow frontend cross-origin requests
+CORS(app)  # Allow cross-origin requests
 
-# ----------------------------
-# Lipana Config
-# ----------------------------
+# -----------------------------
+# Load Lipana Live Config
+# -----------------------------
 LIPANA_SECRET = os.getenv("LIPANA_SECRET")
-LIPANA_URL = os.getenv("LIPANA_URL")
-CALLBACK_URL = os.getenv("CALLBACK_URL")  # Lipana should POST here
+LIPANA_URL = os.getenv("LIPANA_URL")  # For live, usually https://api.lipana.dev/v1/transactions/push
+CALLBACK_URL = os.getenv("CALLBACK_URL")
 
-if not LIPANA_SECRET or not LIPANA_URL:
-    raise ValueError("Please set LIPANA_SECRET and LIPANA_URL in environment variables.")
+if not LIPANA_SECRET or not LIPANA_URL or not CALLBACK_URL:
+    raise ValueError("Please set LIPANA_SECRET, LIPANA_URL, and CALLBACK_URL in environment variables.")
 
-# ----------------------------
-# In-memory storage for demo
-# ----------------------------
-TX_STATUS = {}  # {transaction_id: "pending"|"success"|"failed"}
+# In-memory storage for payment statuses
+PAYMENT_STATUS = {}
 
-# ----------------------------
-# Health check
-# ----------------------------
+# -----------------------------
+# Health Check
+# -----------------------------
 @app.route("/")
 def home():
-    return jsonify({"message": "Netsasa backend (Lipana) is running successfully!"})
+    return jsonify({"message": "Netsasa backend is running!"})
 
-# ----------------------------
-# Payment endpoint
-# ----------------------------
+# -----------------------------
+# STK Push Endpoint
+# -----------------------------
 @app.route("/api/pay", methods=["POST"])
 def pay():
     try:
@@ -41,12 +42,17 @@ def pay():
         if not phone or not amount:
             return jsonify({"success": False, "message": "Missing phone or amount"}), 400
 
-        # Prepare payload for Lipana
+        # Convert 07xxx format to 2547xxx
+        if phone.startswith("0"):
+            phone = "254" + phone[1:]
+        elif phone.startswith("o"):  # in case user types o1
+            phone = "254" + phone[1:]
+
         payload = {
             "amount": amount,
             "phone": phone,
-            "package": package,
-            "callback_url": CALLBACK_URL
+            "callback_url": CALLBACK_URL,
+            "description": f"Buy {package}"
         }
 
         headers = {
@@ -54,62 +60,52 @@ def pay():
             "Content-Type": "application/json"
         }
 
-        resp = requests.post(LIPANA_URL, json=payload, headers=headers)
-        resp.raise_for_status()
-        res_data = resp.json()
+        response = requests.post(LIPANA_URL, json=payload, headers=headers)
+        res_data = response.json()
 
-        tx_id = res_data.get("transaction_id")
-        if not tx_id:
-            return jsonify({"success": False, "message": res_data}), 500
+        # Log response for debugging
+        with open("transactions.log", "a") as f:
+            f.write(f"{datetime.now()} | {json.dumps(res_data)}\n")
 
-        TX_STATUS[tx_id] = "pending"
-        return jsonify({"success": True, "CheckoutRequestID": tx_id})
+        if response.status_code == 200 and "transaction_id" in res_data:
+            tx_id = res_data["transaction_id"]
+            PAYMENT_STATUS[tx_id] = "pending"
+            return jsonify({"success": True, "message": "STK Push sent successfully", "transaction_id": tx_id})
+        else:
+            return jsonify({"success": False, "message": "Payment request failed", "data": res_data}), 500
 
     except Exception as e:
-        with open("error.log", "a") as f:
-            f.write(traceback.format_exc() + "\n")
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
 
-# ----------------------------
-# Callback from Lipana
-# ----------------------------
+# -----------------------------
+# Callback Endpoint
+# -----------------------------
 @app.route("/api/callback", methods=["POST"])
 def callback():
-    try:
-        data = request.get_json()
-        with open("callback.log", "a") as f:
-            json.dump(data, f, indent=4)
-            f.write("\n")
+    data = request.get_json()
+    # Log callback
+    with open("callback.log", "a") as f:
+        f.write(f"{datetime.now()} | {json.dumps(data)}\n")
 
-        # Lipana should send transaction_id and status
-        tx_id = data.get("transaction_id")
-        status = data.get("status")
+    tx_id = data.get("transaction_id")
+    status = data.get("status")  # success / failed
+    if tx_id:
+        PAYMENT_STATUS[tx_id] = status
 
-        if tx_id and status:
-            if status.lower() == "success":
-                TX_STATUS[tx_id] = "success"
-            else:
-                TX_STATUS[tx_id] = "failed"
+    print(f"✅ Callback received: {tx_id} -> {status}")
+    return jsonify({"success": True, "message": "Callback received"})
 
-        print("✅ Lipana callback received:", data)
-        return jsonify({"success": True}), 200
-
-    except Exception as e:
-        with open("error.log", "a") as f:
-            f.write(traceback.format_exc() + "\n")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-# ----------------------------
-# Check transaction status
-# ----------------------------
-@app.route("/api/check/<tx_id>", methods=["GET"])
-def check(tx_id):
-    status = TX_STATUS.get(tx_id, "pending")
+# -----------------------------
+# Check Payment Status
+# -----------------------------
+@app.route("/api/status/<tx_id>", methods=["GET"])
+def status(tx_id):
+    status = PAYMENT_STATUS.get(tx_id, "pending")
     return jsonify({"success": True, "status": status})
 
-# ----------------------------
-# Run server
-# ----------------------------
+# -----------------------------
+# Run Server
+# -----------------------------
 if __name__ == "__main__":
-    print("🚀 NETSASA Backend (Lipana) running on port 5000 ...")
+    print("🚀 Netsasa Backend running on port 5000")
     app.run(host="0.0.0.0", port=5000, debug=True)
