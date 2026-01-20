@@ -21,7 +21,10 @@ app.add_middleware(
 
 # -------------------- Lipana SDK Setup --------------------
 LIPANA_API_KEY = os.getenv("LIPANA_API_KEY")
-WEBHOOK_SECRET = os.getenv("LIPANA_WEBHOOK_SECRET", "d7f5efcab4a3db923edfe8f066294c41613052eb95deee681b785f0770a268ed")
+WEBHOOK_SECRET = os.getenv(
+    "LIPANA_WEBHOOK_SECRET",
+    "d7f5efcab4a3db923edfe8f066294c41613052eb95deee681b785f0770a268ed"
+)
 
 if not LIPANA_API_KEY:
     raise Exception("LIPANA_API_KEY not set in environment variables.")
@@ -99,7 +102,7 @@ async def lipana_webhook(request: Request):
     #     return {"error": "Invalid webhook signature"}, 400
 
     checkout_id = data.get("CheckoutRequestID") or data.get("checkoutRequestID")
-    status = data.get("status")  # "success", "failed", etc.
+    status = data.get("status")  # "success", "failed", "cancelled", etc.
     transaction_id = data.get("transactionId")
 
     if checkout_id:
@@ -109,5 +112,5 @@ async def lipana_webhook(request: Request):
             "raw": data
         }
 
+    # Return 200 to confirm webhook received
     return {"received": True}
-
