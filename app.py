@@ -57,8 +57,7 @@ async def pay(request: Request):
         # Initiate STK push via Lipana SDK
         result = lipana.transactions.initiate_stk_push(
             phone=f"+254{phone[-9:]}",  # ensure +254 format
-            amount=int(amount),
-            description=package_name
+            amount=int(amount)
         )
 
         # Store pending status
@@ -111,3 +110,4 @@ async def lipana_webhook(request: Request):
         }
 
     return {"received": True}
+
