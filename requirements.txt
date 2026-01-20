@@ -1,5 +1,4 @@
 fastapi
 uvicorn
 requests
-pydantic
-python-dotenv
+lipana
