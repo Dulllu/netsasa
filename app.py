@@ -50,28 +50,26 @@ async def pay(request: Request):
     amount = data.get("amount")
     package_name = data.get("packageName", "NETSASA Wi‑Fi Package")
 
-    # Validation
     if not phone or not amount:
         return {"error": "Phone and amount are required."}
     if int(amount) < 10:
         return {"error": "Minimum transaction amount is Ksh 10."}
 
     try:
-        # Initiate STK push via Lipana SDK
         result = lipana.transactions.initiate_stk_push(
-            phone=f"+254{phone[-9:]}",  # ensure +254 format
+            phone=f"+254{phone[-9:]}",
             amount=int(amount)
         )
 
-        # Store pending status
-        checkout_id = result.get("checkoutRequestID") or result.get("CheckoutRequestID")
+        checkout_id = result.get("CheckoutRequestID") or result.get("checkoutRequestID")
         if checkout_id:
             checkout_store[checkout_id] = {"status": "pending", "raw": result}
 
         return {
             "success": True,
             "transactionId": result.get("transactionId"),
-            "CheckoutRequestID": checkout_id
+            "CheckoutRequestID": checkout_id,
+            "raw": result
         }
 
     except LipanaError as err:
@@ -84,25 +82,14 @@ async def pay(request: Request):
 def check_status(checkout_id: str):
     if checkout_id not in checkout_store:
         return {"status": "not_found"}
-
     return {"status": checkout_store[checkout_id]["status"]}
 
 # -------------------- Webhook Endpoint --------------------
 @app.post("/api/webhook")
 async def lipana_webhook(request: Request):
-    """
-    Lipana sends a POST request here for every transaction update.
-    This updates checkout_store in real-time.
-    """
     data = await request.json()
-
-    # Optional: Verify secret (if Lipana sends it in headers)
-    # signature = request.headers.get("X-Lipana-Signature")
-    # if signature != WEBHOOK_SECRET:
-    #     return {"error": "Invalid webhook signature"}, 400
-
     checkout_id = data.get("CheckoutRequestID") or data.get("checkoutRequestID")
-    status = data.get("status")  # "success", "failed", "cancelled", etc.
+    status = data.get("status")
     transaction_id = data.get("transactionId")
 
     if checkout_id:
@@ -112,5 +99,4 @@ async def lipana_webhook(request: Request):
             "raw": data
         }
 
-    # Return 200 to confirm webhook received
     return {"received": True}
