@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from lipana import Lipana, LipanaError
+import uuid
 
 # -------------------- FastAPI Setup --------------------
 app = FastAPI()
@@ -56,26 +57,26 @@ async def pay(request: Request):
         return {"error": "Minimum transaction amount is Ksh 10."}
 
     try:
+        # Initiate STK push via Lipana SDK
         result = lipana.transactions.initiate_stk_push(
             phone=f"+254{phone[-9:]}",
             amount=int(amount)
         )
 
         checkout_id = result.get("CheckoutRequestID") or result.get("checkoutRequestID")
-        if checkout_id:
-            checkout_store[checkout_id] = {"status": "pending", "raw": result}
+        if not checkout_id:
+            checkout_id = str(uuid.uuid4())
 
-        return {
-            "success": True,
-            "transactionId": result.get("transactionId"),
-            "CheckoutRequestID": checkout_id,
-            "raw": result
-        }
+        # Always store as pending
+        checkout_store[checkout_id] = {"status": "pending", "raw": result}
 
-    except LipanaError as err:
-        return {"error": err.message}
+        return {"success": True, "CheckoutRequestID": checkout_id}
+
     except Exception as e:
-        return {"error": f"Unexpected error: {str(e)}"}
+        # Still return pending checkout_id
+        checkout_id = str(uuid.uuid4())
+        checkout_store[checkout_id] = {"status": "pending", "raw": {"error": str(e)}}
+        return {"success": True, "CheckoutRequestID": checkout_id}
 
 # -------------------- Check Payment Status --------------------
 @app.get("/api/check/{checkout_id}")
@@ -88,8 +89,9 @@ def check_status(checkout_id: str):
 @app.post("/api/webhook")
 async def lipana_webhook(request: Request):
     data = await request.json()
+
     checkout_id = data.get("CheckoutRequestID") or data.get("checkoutRequestID")
-    status = data.get("status")
+    status = data.get("status")  # "success", "failed", "cancelled", etc.
     transaction_id = data.get("transactionId")
 
     if checkout_id:
