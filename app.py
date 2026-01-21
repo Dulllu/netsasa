@@ -7,7 +7,6 @@ import asyncio
 # -------------------- FastAPI Setup --------------------
 app = FastAPI()
 
-# CORS config (only your frontend)
 origins = [
     "https://netsasa.netlify.app",
 ]
@@ -28,7 +27,7 @@ WEBHOOK_SECRET = os.getenv(
 )
 
 if not LIPANA_API_KEY:
-    raise Exception("LIPANA_API_KEY not set in environment variables.")
+    raise Exception("LIPANA_API_KEY not set")
 
 lipana = Lipana(
     api_key=LIPANA_API_KEY,
@@ -36,12 +35,12 @@ lipana = Lipana(
 )
 
 # -------------------- In-memory store --------------------
-checkout_store = {}  # key: CheckoutRequestID, value: dict(status, transaction_id, raw_data)
+checkout_store = {}  # CheckoutRequestID -> {status, transaction_id, raw}
 
-# -------------------- Health Check --------------------
+# -------------------- Health --------------------
 @app.get("/")
 def root():
-    return {"message": "NETSASA backend (Lipana SDK) alive"}
+    return {"message": "NETSASA backend alive"}
 
 # -------------------- Initiate Payment --------------------
 @app.post("/api/pay")
@@ -49,67 +48,65 @@ async def pay(request: Request):
     data = await request.json()
     phone = data.get("phone")
     amount = data.get("amount")
-    package_name = data.get("packageName", "NETSASA Wi‑Fi Package")
 
-    # Validation
     if not phone or not amount:
-        return {"error": "Phone and amount are required."}
+        return {"error": "Phone and amount are required"}
+
     if int(amount) < 10:
-        return {"error": "Minimum transaction amount is Ksh 10."}
+        return {"error": "Minimum transaction amount is Ksh 10"}
 
     try:
-        # Initiate STK push via Lipana SDK
         result = lipana.transactions.initiate_stk_push(
-            phone=f"+254{phone[-9:]}",  # ensure +254 format
+            phone=f"+254{phone[-9:]}",
             amount=int(amount)
         )
 
-        # Store pending status
-        checkout_id = result.get("checkoutRequestID") or result.get("CheckoutRequestID")
-        if checkout_id:
-            checkout_store[checkout_id] = {"status": "pending", "raw": result}
+        checkout_id = result.get("CheckoutRequestID") or result.get("checkoutRequestID")
 
-            # Start automatic cancellation timer (2 minutes)
-            asyncio.create_task(auto_cancel_payment(checkout_id, delay=120))
+        if checkout_id:
+            checkout_store[checkout_id] = {
+                "status": "pending",
+                "raw": result
+            }
+            asyncio.create_task(auto_cancel_payment(checkout_id))
 
         return {
             "success": True,
-            "transactionId": result.get("transactionId"),
-            "CheckoutRequestID": checkout_id
+            "CheckoutRequestID": checkout_id,
+            "transactionId": result.get("transactionId")
         }
 
     except LipanaError as err:
         return {"error": err.message}
-    except Exception as e:
-        return {"error": f"Unexpected error: {str(e)}"}
 
-# -------------------- Auto-Cancel Pending Payments --------------------
+    except Exception as e:
+        return {"error": str(e)}
+
+# -------------------- Auto cancel --------------------
 async def auto_cancel_payment(checkout_id: str, delay: int = 120):
     await asyncio.sleep(delay)
-    # Only cancel if still pending
-    if checkout_id in checkout_store and checkout_store[checkout_id]["status"] == "pending":
-        checkout_store[checkout_id]["status"] = "cancelled"
-        print(f"Payment {checkout_id} auto-marked as cancelled after {delay} seconds.")
+    if checkout_id in checkout_store:
+        if checkout_store[checkout_id]["status"] == "pending":
+            checkout_store[checkout_id]["status"] = "cancelled"
+            print(f"[AUTO CANCEL] {checkout_id}")
 
-# -------------------- Check Payment Status --------------------
+# -------------------- Status Check --------------------
 @app.get("/api/check/{checkout_id}")
 def check_status(checkout_id: str):
     if checkout_id not in checkout_store:
         return {"status": "not_found"}
 
-    return {"status": checkout_store[checkout_id]["status"]}
+    return {
+        "status": checkout_store[checkout_id]["status"]
+    }
 
-# -------------------- Webhook Endpoint --------------------
+# -------------------- Webhook --------------------
 @app.post("/api/webhook")
 async def lipana_webhook(request: Request):
-    """
-    Lipana sends a POST request here for every transaction update.
-    This updates checkout_store in real-time.
-    """
     data = await request.json()
 
     checkout_id = data.get("CheckoutRequestID") or data.get("checkoutRequestID")
-    status = data.get("status")  # "success", "failed", "cancelled", etc.
+    status = data.get("status")
     transaction_id = data.get("transactionId")
 
     if checkout_id:
@@ -118,6 +115,6 @@ async def lipana_webhook(request: Request):
             "transaction_id": transaction_id,
             "raw": data
         }
-        print(f"Webhook update: {checkout_id} -> {status}")
+        print(f"[WEBHOOK] {checkout_id} -> {status}")
 
     return {"received": True}
