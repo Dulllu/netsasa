@@ -11,7 +11,7 @@ from typing import Dict
 app = FastAPI(title="NETSASA Backend with SSE")
 
 origins = [
-    "https://netsasa.netlify.app",
+    "https://netsasa-frontend.onrender.com",
     "http://localhost:3000"
 ]
 
@@ -146,3 +146,4 @@ async def notify_subscriber(checkout_id: str, message: dict):
     queue = subscribers.get(checkout_id)
     if queue:
         await queue.put(message)
+
