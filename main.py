@@ -116,15 +116,21 @@ def check_status(checkout_id: str):
 # -------------------- Lipana Webhook --------------------
 @app.post("/api/webhook")
 async def lipana_webhook(request: Request):
-    try:
-        data = await request.json()
-        checkout_id = data.get("CheckoutRequestID") or data.get("checkoutRequestID") or data.get("transactionId")
-        status = data.get("status")
-        transaction_id = data.get("transactionId")
+    data = await request.json()
+    print("[WEBHOOK RECEIVED]", data)  # log incoming webhook
 
-        if not checkout_id:
-            print("[WEBHOOK ERROR] No checkout ID in webhook:", data)
-            return {"error": "No checkout ID in webhook"}
+    checkout_id = data.get("CheckoutRequestID") or data.get("checkoutRequestID")
+    status = data.get("status") or data.get("ResultCode")  # fallback for Lipana
+    transaction_id = data.get("transactionId")
+
+    if checkout_id:
+        # normalize status
+        if status in ["0", "Completed", "Success"]:
+            status = "success"
+        elif status in ["1", "Failed", "Cancelled"]:
+            status = "failed"
+        else:
+            status = "pending"
 
         checkout_store[checkout_id] = {
             "status": status,
@@ -134,11 +140,7 @@ async def lipana_webhook(request: Request):
         await notify_subscriber(checkout_id, {"status": status})
         print(f"[WEBHOOK] {checkout_id} -> {status}")
 
-        return {"received": True}
-
-    except Exception as e:
-        print("[WEBHOOK EXCEPTION]", e)
-        return {"error": str(e)}
+    return {"received": True}
 
 # -------------------- SSE Endpoint --------------------
 @app.get("/api/stream/{checkout_id}")
@@ -168,4 +170,5 @@ async def notify_subscriber(checkout_id: str, message: dict):
             await queue.put(message)
         except Exception as e:
             print("[NOTIFY EXCEPTION]", checkout_id, e)
+
 
