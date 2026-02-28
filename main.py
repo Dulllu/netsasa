@@ -49,8 +49,17 @@ async def initiate_payment(request: Request):
         phone = data.get("phone")
         package_id = data.get("package_id")
         price_map = {
-            "p2": 10, "p3": 20, "pNEW": 35, "p4": 50, "p5": 100, "p9": 150, "p10": 400
-        }
+    "p1": 10,
+    "p2": 25,
+    "p3": 50,
+    "p4": 75,
+    "p5": 100,
+    "p6": 150,
+    "p7": 200,
+    "p8": 300,
+    "p9": 450,
+    "p10": 600
+}
         amount = price_map.get(package_id)
 
         if not phone or not package_id or not amount:
@@ -159,3 +168,4 @@ async def notify_subscriber(checkout_id: str, message: dict):
             await queue.put(message)
         except Exception as e:
             print("[NOTIFY EXCEPTION]", checkout_id, e)
+
