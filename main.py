@@ -3,16 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import os
 import asyncio
-from lipana import Lipana, LipanaError
 import json
 from typing import Dict
+from lipana import Lipana, LipanaError
 
 # -------------------- FastAPI Setup --------------------
-app = FastAPI(title="NETSASA Backend with SSE")
+app = FastAPI(title="NETSASA Backend with Lipana SSE")
 
 origins = [
     "https://netsasa-frontend.onrender.com",
-    "http://localhost:3000"
+    "http://localhost:3000",
 ]
 
 app.add_middleware(
@@ -23,12 +23,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------- Lipana SDK Setup --------------------
+# -------------------- Lipana SDK --------------------
 LIPANA_API_KEY = os.getenv("LIPANA_API_KEY")
-WEBHOOK_SECRET = os.getenv(
-    "LIPANA_WEBHOOK_SECRET",
-    "d7f5efcab4a3db923edfe8f066294c41613052eb95deee681b785f0770a268ed"
-)
+WEBHOOK_SECRET = os.getenv("LIPANA_WEBHOOK_SECRET", "replace_with_secure_secret")
 
 if not LIPANA_API_KEY:
     raise Exception("LIPANA_API_KEY not set in environment variables")
@@ -36,74 +33,67 @@ if not LIPANA_API_KEY:
 lipana = Lipana(api_key=LIPANA_API_KEY, environment="production")
 
 # -------------------- In-memory store --------------------
-checkout_store: Dict[str, Dict] = {}  # {CheckoutRequestID: {"status": str, "transaction_id": str, "raw": dict}}
-
-# SSE subscribers
-subscribers: Dict[str, asyncio.Queue] = {}  # checkout_id -> queue
-
+checkout_store: Dict[str, Dict] = {}   # checkout_id -> {status, transaction_id, raw}
+subscribers: Dict[str, asyncio.Queue] = {}  # checkout_id -> asyncio.Queue()
 
 # -------------------- Health Check --------------------
 @app.get("/")
 def root():
-    return {"message": "NETSASA backend with SSE alive"}
-
+    return {"message": "NETSASA backend alive"}
 
 # -------------------- Initiate Payment --------------------
 @app.post("/api/pay")
 async def initiate_payment(request: Request):
     data = await request.json()
     phone = data.get("phone")
-    amount = data.get("amount")
+    package_id = data.get("package_id")
+    price_map = {
+        "p2": 10, "p3": 20, "pNEW": 35, "p4": 50, "p5": 100, "p9": 150, "p10": 400
+    }
+    amount = price_map.get(package_id)
 
-    if not phone or not amount:
-        return {"error": "Phone and amount are required"}
-    if int(amount) < 10:
-        return {"error": "Minimum transaction amount is Ksh 10"}
+    if not phone or not package_id or not amount:
+        return {"error": "Phone and valid package_id are required"}
 
     try:
+        # Lipana STK push
         result = lipana.transactions.initiate_stk_push(
             phone=f"+254{phone[-9:]}",
-            amount=int(amount)
+            amount=amount
         )
         checkout_id = result.get("CheckoutRequestID") or result.get("checkoutRequestID")
-
         if checkout_id:
             checkout_store[checkout_id] = {"status": "pending", "raw": result}
             subscribers[checkout_id] = asyncio.Queue()
             asyncio.create_task(auto_cancel_payment(checkout_id))
-
         return {
             "success": True,
             "CheckoutRequestID": checkout_id,
             "transactionId": result.get("transactionId")
         }
-
     except LipanaError as err:
         return {"error": err.message}
     except Exception as e:
         return {"error": str(e)}
 
-
-# -------------------- Auto Cancel --------------------
+# -------------------- Auto Cancel Pending Payment --------------------
 async def auto_cancel_payment(checkout_id: str, delay: int = 120):
     await asyncio.sleep(delay)
     entry = checkout_store.get(checkout_id)
     if entry and entry["status"] == "pending":
         entry["status"] = "cancelled"
         await notify_subscriber(checkout_id, {"status": "cancelled"})
-        print(f"[AUTO CANCEL] {checkout_id} marked as cancelled")
-
+        print(f"[AUTO CANCEL] {checkout_id} cancelled after timeout")
 
 # -------------------- Check Payment Status --------------------
 @app.get("/api/check/{checkout_id}")
-def check_payment_status(checkout_id: str):
+def check_status(checkout_id: str):
     entry = checkout_store.get(checkout_id)
     if not entry:
         return {"status": "not_found"}
     return {"status": entry["status"]}
 
-
-# -------------------- Webhook Receiver --------------------
+# -------------------- Lipana Webhook --------------------
 @app.post("/api/webhook")
 async def lipana_webhook(request: Request):
     data = await request.json()
@@ -122,7 +112,6 @@ async def lipana_webhook(request: Request):
 
     return {"received": True}
 
-
 # -------------------- SSE Endpoint --------------------
 @app.get("/api/stream/{checkout_id}")
 async def stream_checkout(checkout_id: str):
@@ -139,7 +128,6 @@ async def stream_checkout(checkout_id: str):
                 break
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
 
 # -------------------- Notify Subscriber --------------------
 async def notify_subscriber(checkout_id: str, message: dict):
